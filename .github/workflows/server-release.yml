@@ -1,0 +1,132 @@
+# Build the Go server binary and create a GitHub Release.
+#
+# Trigger: push a tag matching `server/v*`
+#
+#   git tag server/v0.2.0
+#   git push origin server/v0.2.0
+#
+# Produces cross-compiled binaries for the matrix below and attaches them
+# to a new GitHub Release as downloadable assets.
+#
+# No extra secrets required — GITHUB_TOKEN is used automatically.
+
+name: server — GitHub Release
+
+on:
+  push:
+    tags:
+      - "server/v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      # ── Build ────────────────────────────────────────────────────────────────
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          ASSET="acp-ws-server-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          go build -trimpath -ldflags="-s -w" -o "${ASSET}" .
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+
+      # ── Upload artifact so the release job can pick it up ───────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: server/${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create releases
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Extract tag info ─────────────────────────────────────────────────────
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. server/v0.2.0
+          VERSION="${TAG#server/v}"         # strip "server/v" prefix → 0.2.0
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      # ── Download all build artifacts ─────────────────────────────────────────
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # ── List what we got ────────────────────────────────────────────────────
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      # ── Create release ───────────────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "acp-ws-server v${{ steps.version.outputs.version }}"
+          body: |
+            ## acp-ws-server v${{ steps.version.outputs.version }}
+
+            ACP WebSocket transport server — Go binary release.
+
+            ### Download
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Linux    | amd64       | `acp-ws-server-linux-amd64` |
+            | Linux    | arm64       | `acp-ws-server-linux-arm64` |
+            | macOS    | amd64       | `acp-ws-server-darwin-amd64` |
+            | macOS    | arm64 (M1+) | `acp-ws-server-darwin-arm64` |
+            | Windows  | amd64       | `acp-ws-server-windows-amd64.exe` |
+
+            ### Usage
+
+            ```sh
+            chmod +x acp-ws-server-linux-amd64
+            ./acp-ws-server-linux-amd64 -- node dist/my-agent.js
+            ./acp-ws-server-linux-amd64 --port 8080 -- python my_agent.py
+            ```
+
+            Authentication is handled by a reverse proxy — see README for details.
+          files: artifacts/**/*
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false

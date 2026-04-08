@@ -1,0 +1,74 @@
+# Publish the TypeScript client library to npm.
+#
+# Trigger: push a tag matching `client/v*`
+#
+#   git tag client/v0.2.0
+#   git push origin client/v0.2.0
+#
+# Required secret:
+#   NPM_TOKEN — npm automation token with publish permission for the package.
+#
+# The version in client/package.json MUST match the tag (e.g. tag client/v0.2.0
+# → package.json "version": "0.2.0"). The workflow enforces this check.
+
+name: client — npm publish
+
+on:
+  push:
+    tags:
+      - "client/v*"
+
+jobs:
+  publish:
+    name: Build & publish to npm
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Extract semver from the tag ──────────────────────────────────────────
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. client/v0.2.0
+          VERSION="${TAG#client/v}"         # strip "client/v" prefix → 0.2.0
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # ── Verify package.json version matches the tag ──────────────────────────
+      - name: Check package.json version matches tag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) != tag version ($TAG_VERSION)"
+            exit 1
+          fi
+
+      # ── Setup ────────────────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm install
+
+      # ── Test ─────────────────────────────────────────────────────────────────
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npx vitest run
+
+      # ── Build ────────────────────────────────────────────────────────────────
+      - name: Build
+        run: npx tsc
+
+      # ── Publish ──────────────────────────────────────────────────────────────
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,64 @@
+# CI: run tests for both client and server on every push / PR.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # ── TypeScript client ────────────────────────────────────────────────────────
+  client:
+    name: client (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    strategy:
+      matrix:
+        node: ["20", "22"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npx vitest run
+
+  # ── Go server ────────────────────────────────────────────────────────────────
+  server:
+    name: server (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Build client first (Go tests depend on echo-agent)
+        working-directory: client
+        run: |
+          npm install
+          npx tsc
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test ./... -v
