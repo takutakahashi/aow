@@ -56,16 +56,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ── Test ─────────────────────────────────────────────────────────────────
-      - name: Type-check
-        run: npx tsc --noEmit
-
-      - name: Run tests
-        run: npx vitest run
-
       # ── Build ────────────────────────────────────────────────────────────────
       - name: Build
         run: npx tsc
+
+      # ── Test ─────────────────────────────────────────────────────────────────
+      - name: Run tests
+        run: npx vitest run
 
       # ── Publish ──────────────────────────────────────────────────────────────
       - name: Publish to npm

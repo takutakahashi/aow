@@ -1,6 +1,6 @@
 {
   "name": "acp-websocket-transport",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "WebSocket transport layer for ACP (Agent Client Protocol) — TypeScript client library",
   "type": "module",
   "main": "dist/src/index.js",
