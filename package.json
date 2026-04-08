@@ -11,6 +11,9 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "bin": {
+    "acp-ws-server": "./dist/src/bin.js"
+  },
   "files": ["dist"],
   "scripts": {
     "build": "tsc",
