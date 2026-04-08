@@ -29,6 +29,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -36,7 +37,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/takutakahashi/aow/server/internal/bridge"
@@ -102,6 +105,8 @@ Examples:
 	// ── WebSocket upgrader ────────────────────────────────────────────────────
 	// CheckOrigin always returns true: origin enforcement is the reverse proxy's
 	// responsibility, not this server's.
+	// ⚠️  Do NOT expose this server directly to the internet without a reverse
+	// proxy (nginx, Caddy, Envoy, …) that enforces origin and authentication.
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
@@ -114,14 +119,18 @@ Examples:
 	// ── HTTP handler ──────────────────────────────────────────────────────────
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Log the client identity as seen by the reverse proxy.
-		clientIP := r.Header.Get("X-Real-IP")
+		// Sanitize header values to prevent log injection via embedded newlines.
+		sanitize := func(s string) string {
+			return strings.NewReplacer("\n", "", "\r", "").Replace(s)
+		}
+		clientIP := sanitize(r.Header.Get("X-Real-IP"))
 		if clientIP == "" {
-			clientIP = r.Header.Get("X-Forwarded-For")
+			clientIP = sanitize(r.Header.Get("X-Forwarded-For"))
 		}
 		if clientIP == "" {
 			clientIP = r.RemoteAddr
 		}
-		log.Printf("new connection from %s (proto=%s)", clientIP, r.Header.Get("X-Forwarded-Proto"))
+		log.Printf("new connection from %s (proto=%s)", clientIP, sanitize(r.Header.Get("X-Forwarded-Proto")))
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -147,12 +156,18 @@ Examples:
 	server := &http.Server{}
 
 	// ── graceful shutdown ─────────────────────────────────────────────────────
+	// On SIGTERM / SIGINT, stop accepting new connections and give in-flight
+	// WebSocket sessions up to 30 s to finish before forcing a close.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		sig := <-sigCh
-		log.Printf("received %s — shutting down", sig)
-		_ = server.Close()
+		log.Printf("received %s — shutting down (30 s drain)", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 	}()
 
 	if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {

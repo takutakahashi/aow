@@ -16,9 +16,15 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// wsWriteTimeout is the per-message deadline for WebSocket writes.
+// A slow or stalled client will be disconnected after this duration
+// rather than blocking the stdout relay goroutine indefinitely.
+const wsWriteTimeout = 30 * time.Second
 
 // Config holds the command used to spawn the ACP agent for each connection.
 type Config struct {
@@ -101,6 +107,9 @@ func Handle(conn *websocket.Conn, cfg Config) {
 			if len(line) == 0 {
 				continue
 			}
+			// Set a per-write deadline so a slow/stalled client cannot block
+			// this goroutine (and thus the agent's stdout) indefinitely.
+			_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 			if err := conn.WriteMessage(websocket.TextMessage, line); err != nil {
 				return
 			}
@@ -118,6 +127,7 @@ func Handle(conn *websocket.Conn, cfg Config) {
 	_ = cmd.Wait()
 
 	// Close the WebSocket gracefully
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_ = conn.WriteMessage(websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, "agent exited"))
 	_ = conn.Close()
