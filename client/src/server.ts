@@ -163,7 +163,7 @@ export class WebSocketACPServer {
 
     // Relay agent stderr → server stderr for debuggability
     child.stderr?.on("data", (chunk: Buffer) => {
-      process.stderr.write(`[echo-agent stderr] ${chunk.toString()}`);
+      process.stderr.write(`[${command} stderr] ${chunk.toString()}`);
     });
 
     // Build the stdio Stream for the agent
@@ -178,18 +178,25 @@ export class WebSocketACPServer {
     // Build the WebSocket Stream for the remote client
     const clientStream: Stream = wsStream(ws);
 
+    // Acquire readers upfront so each pump can cancel the other's reader
+    // when an error occurs, preventing the peer from blocking indefinitely.
+    const agentReader = agentStream.readable.getReader();
+    const clientReader = clientStream.readable.getReader();
+
     // Bidirectional bridge (transparent proxy — no ACP interpretation)
-    void this.pumpStream(
-      clientStream.readable,
+    void this.pumpWithReader(
+      clientReader,
       agentStream.writable,
       "client → agent",
-      onError
+      onError,
+      () => { agentReader.cancel("client pump closed").catch(() => {}); }
     );
-    void this.pumpStream(
-      agentStream.readable,
+    void this.pumpWithReader(
+      agentReader,
       clientStream.writable,
       "agent → client",
-      onError
+      onError,
+      () => { clientReader.cancel("agent pump closed").catch(() => {}); }
     );
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -228,16 +235,21 @@ export class WebSocketACPServer {
   // ─── Stream pump ────────────────────────────────────────────────────────────
 
   /**
-   * Reads all messages from `src` and writes them to `dst`.
-   * Errors are forwarded to `onError` and both streams are cleaned up.
+   * Reads all messages from `reader` and writes them to `dst`.
+   * On error: forwards to `onError`, invokes `cancelPeer` to unblock the
+   * opposite pump direction, then aborts the writer.
+   *
+   * Callers must acquire `reader` before calling this method so that both
+   * pump directions can hold references to each other's reader for
+   * cross-cancellation.
    */
-  private async pumpStream(
-    src: ReadableStream<unknown>,
+  private async pumpWithReader(
+    reader: ReadableStreamDefaultReader<unknown>,
     dst: WritableStream<unknown>,
     _label: string,
-    onError?: (err: Error, context: ErrorContext) => void
+    onError?: (err: Error, context: ErrorContext) => void,
+    cancelPeer?: () => void
   ): Promise<void> {
-    const reader = src.getReader();
     const writer = dst.getWriter();
     try {
       while (true) {
@@ -248,6 +260,9 @@ export class WebSocketACPServer {
       await writer.close();
     } catch (err) {
       onError?.(err as Error, "bridge");
+      // Cancel the peer direction so it doesn't block waiting for messages
+      // that will never arrive after this side has failed.
+      cancelPeer?.();
       await writer.abort(err).catch(() => {
         /* ignore secondary errors during abort */
       });

@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Type-check
+        run: npx tsc --noEmit
+
       - name: Build (required by server/e2e tests that spawn dist/examples/echo-agent.js)
         run: npx tsc
 

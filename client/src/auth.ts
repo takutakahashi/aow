@@ -32,6 +32,7 @@
  * ```
  */
 
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -62,6 +63,37 @@ export type VerifyClientFn = (
   info: VerifyClientInfo
 ) => boolean | Promise<boolean>;
 
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Constant-time string comparison to prevent timing attacks.
+ * Always performs the same number of operations regardless of where strings differ.
+ */
+function safeStringEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.byteLength !== bb.byteLength) {
+    // Perform a dummy comparison to keep execution time consistent,
+    // preventing length-based timing leaks.
+    timingSafeEqual(ba, ba);
+    return false;
+  }
+  return timingSafeEqual(ba, bb);
+}
+
+/**
+ * Constant-time Set membership check.
+ * Iterates all entries so the result cannot be inferred from timing.
+ */
+function safeSetHas(set: Set<string>, value: string): boolean {
+  let result = false;
+  for (const item of set) {
+    // Do NOT short-circuit — always check every entry
+    if (safeStringEqual(item, value)) result = true;
+  }
+  return result;
+}
+
 // ─── Built-in helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -80,7 +112,7 @@ export function bearerAuth(validTokens: Iterable<string>): VerifyClientFn {
     if (spaceIdx === -1) return false;
     const scheme = auth.slice(0, spaceIdx).toLowerCase();
     const token = auth.slice(spaceIdx + 1);
-    return scheme === "bearer" && tokens.has(token);
+    return scheme === "bearer" && safeSetHas(tokens, token);
   };
 }
 
@@ -110,8 +142,8 @@ export function basicAuth(
     if (colonIdx === -1) return false;
     const user = decoded.slice(0, colonIdx);
     const pass = decoded.slice(colonIdx + 1);
-    return Object.prototype.hasOwnProperty.call(credentials, user) &&
-      credentials[user] === pass;
+    if (!Object.prototype.hasOwnProperty.call(credentials, user)) return false;
+    return safeStringEqual(credentials[user]!, pass);
   };
 }
 
@@ -138,7 +170,7 @@ export function apiKeyAuth(
   return ({ req }) => {
     const value = req.headers[normalizedHeader];
     if (typeof value !== "string") return false;
-    return keys.has(value);
+    return safeSetHas(keys, value);
   };
 }
 
