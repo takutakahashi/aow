@@ -93,6 +93,8 @@ func spawnAgentProc(cfg Config) (*agentProc, error) {
 		return nil, fmt.Errorf("start agent: %w", err)
 	}
 
+	log.Printf("[bridge] spawned agent pid=%d cmd=%s", cmd.Process.Pid, cfg.Command)
+
 	a := &agentProc{
 		cmd:          cmd,
 		stdin:        stdin,
@@ -114,12 +116,17 @@ func spawnAgentProc(cfg Config) (*agentProc, error) {
 			}
 			cp := make([]byte, len(line))
 			copy(cp, line)
+			log.Printf("[bridge] stdout→outCh: %s", cp)
 			select {
 			case a.outCh <- cp:
 			default:
 				log.Printf("[bridge] stdout buffer full — dropping line")
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("[bridge] scanner error: %v", err)
+		}
+		log.Printf("[bridge] stdout drain goroutine exiting (pid=%d)", cmd.Process.Pid)
 	}()
 
 	return a, nil
@@ -143,12 +150,13 @@ func Handle(conn *websocket.Conn, cfg Config) {
 	}
 	tempSub := tempAgent.subscribe()
 	tempAgent.startFanOut()
+	log.Printf("[bridge] Handle: temp agent spawned, starting writer goroutine")
 
 	// ── Session routing state ─────────────────────────────────────────────────
 	var (
-		agentMu    sync.Mutex
-		curAgent   = tempAgent
-		curSub     = tempSub
+		agentMu        sync.Mutex
+		curAgent       = tempAgent
+		curSub         = tempSub
 		sessionMsgID   json.RawMessage // ID of the session/new call
 		registeredID   string          // ACP session ID registered in this connection
 		intercepted    bool            // true once session/new or session/resume is handled
@@ -165,6 +173,7 @@ func Handle(conn *websocket.Conn, cfg Config) {
 		agentMu.Lock()
 		sub := curSub
 		agentMu.Unlock()
+		log.Printf("[bridge] writer goroutine started, waiting on sub channel")
 
 		for {
 			select {
@@ -172,13 +181,18 @@ func Handle(conn *websocket.Conn, cfg Config) {
 				if !ok {
 					// sub was closed (agent exit or explicit unsubscribe).
 					// Wait for a replacement sub, or exit if newSubCh is closed.
+					log.Printf("[bridge] writer: sub closed, waiting for newSubCh")
 					newSub, ok := <-newSubCh
 					if !ok {
+						log.Printf("[bridge] writer: newSubCh closed, exiting")
 						return
 					}
 					sub = newSub
+					log.Printf("[bridge] writer: switched to new sub")
 					continue
 				}
+
+				log.Printf("[bridge] writer: received line from agent (%d bytes)", len(line))
 
 				// Capture ACP session ID from session/new response.
 				if len(sessionMsgID) > 0 && registeredID == "" {
@@ -199,14 +213,18 @@ func Handle(conn *websocket.Conn, cfg Config) {
 
 				_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 				if err := conn.WriteMessage(websocket.TextMessage, line); err != nil {
+					log.Printf("[bridge] writer: WS write error: %v", err)
 					return
 				}
+				log.Printf("[bridge] writer: forwarded to WS (%d bytes)", len(line))
 
 			case newSub, ok := <-newSubCh:
 				if !ok {
+					log.Printf("[bridge] writer: newSubCh closed, exiting")
 					return
 				}
 				sub = newSub
+				log.Printf("[bridge] writer: switched to new sub via select")
 			}
 		}
 	}()
@@ -215,11 +233,14 @@ func Handle(conn *websocket.Conn, cfg Config) {
 	for {
 		mt, raw, err := conn.ReadMessage()
 		if err != nil {
+			log.Printf("[bridge] reader: ReadMessage error: %v", err)
 			break
 		}
 		if mt != websocket.TextMessage {
 			continue
 		}
+
+		log.Printf("[bridge] reader: received from WS (%d bytes): %s", len(raw), raw)
 
 		if !intercepted {
 			var rpc rpcMsg
@@ -283,6 +304,7 @@ func Handle(conn *websocket.Conn, cfg Config) {
 					agentMu.Lock()
 					a := curAgent
 					agentMu.Unlock()
+					log.Printf("[bridge] forwarding converted session/new to agent stdin")
 					if _, fwErr := fmt.Fprintf(a.stdin, "%s\n", converted); fwErr != nil {
 						log.Printf("[bridge] converted session/new write: %v", fwErr)
 					}
@@ -302,6 +324,13 @@ func Handle(conn *websocket.Conn, cfg Config) {
 		a := curAgent
 		agentMu.Unlock()
 		a.touch()
+		log.Printf("[bridge] forwarding %q to agent stdin", func() string {
+			var rpc rpcMsg
+			if json.Unmarshal(raw, &rpc) == nil {
+				return rpc.Method
+			}
+			return "(unknown)"
+		}())
 		if _, fwErr := fmt.Fprintf(a.stdin, "%s\n", raw); fwErr != nil {
 			log.Printf("[bridge] stdin write: %v", fwErr)
 			break

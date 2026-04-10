@@ -90,15 +90,19 @@ func (a *agentProc) unsubscribe(ch chan []byte) {
 // The goroutine exits when outCh is closed (agent process ended).
 func (a *agentProc) startFanOut() {
 	go func() {
+		log.Printf("[bridge] fanout goroutine started (pid=%d)", a.cmd.Process.Pid)
 		for line := range a.outCh {
+			log.Printf("[bridge] fanout: outCh→sub (%d bytes)", len(line))
 			a.subMu.Lock()
 			sub := a.sub
 			a.subMu.Unlock()
 			if sub == nil {
+				log.Printf("[bridge] fanout: no subscriber, dropping line")
 				continue // no WS connected — discard to keep agent unblocked
 			}
 			select {
 			case sub <- line:
+				log.Printf("[bridge] fanout: sent to sub")
 			default:
 				// Subscriber channel full — drop to keep fan-out unblocked.
 				log.Printf("[bridge] subscriber channel full, dropping line")
