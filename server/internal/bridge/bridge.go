@@ -96,11 +96,10 @@ func spawnAgentProc(cfg Config) (*agentProc, error) {
 	log.Printf("[bridge] spawned agent pid=%d cmd=%s", cmd.Process.Pid, cfg.Command)
 
 	a := &agentProc{
-		cmd:          cmd,
-		stdin:        stdin,
-		outCh:        make(chan []byte, outChanCapacity),
-		done:         make(chan struct{}),
-		lastActivity: time.Now(),
+		cmd:   cmd,
+		stdin: stdin,
+		outCh: make(chan []byte, outChanCapacity),
+		done:  make(chan struct{}),
 	}
 
 	// Drain stdout → outCh so the agent is never blocked on writes.

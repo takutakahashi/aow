@@ -6,7 +6,6 @@ import (
 	"log"
 	"os/exec"
 	"sync"
-	"time"
 )
 
 const (
@@ -16,13 +15,6 @@ const (
 
 	// subChanCapacity is the buffer size of the per-WS subscriber channel.
 	subChanCapacity = 512
-
-	// sessionTTL defines how long an idle agent is kept alive after
-	// the WebSocket disconnects.
-	sessionTTL = 2 * time.Hour
-
-	// cleanupInterval is how often the cleanup goroutine runs.
-	cleanupInterval = 10 * time.Minute
 )
 
 // agentProc holds a running agent process and its I/O plumbing.
@@ -45,18 +37,10 @@ type agentProc struct {
 	// sub is the channel for the currently connected WebSocket.
 	// nil when no WebSocket is connected.
 	sub chan []byte
-
-	// lastActivity is updated on every stdin write or subscriber change.
-	mu           sync.Mutex
-	lastActivity time.Time
 }
 
-// touch records recent activity (call while holding no locks).
-func (a *agentProc) touch() {
-	a.mu.Lock()
-	a.lastActivity = time.Now()
-	a.mu.Unlock()
-}
+// touch is a no-op kept for call-site compatibility.
+func (a *agentProc) touch() {}
 
 // subscribe creates a new subscriber channel for the caller.
 // Any previous subscriber is replaced and its channel is closed.
@@ -69,7 +53,6 @@ func (a *agentProc) subscribe() chan []byte {
 	if old != nil {
 		close(old) // causes the old WS goroutine to exit cleanly
 	}
-	a.touch()
 	return ch
 }
 
@@ -118,6 +101,8 @@ func (a *agentProc) startFanOut() {
 // ─── Session Store ────────────────────────────────────────────────────────────
 
 // sessionStore maps ACP session IDs to live agent processes.
+// Sessions are kept for the entire lifetime of the acp-ws-server process;
+// they are only removed when the agent process itself exits.
 type sessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*agentProc
@@ -125,10 +110,6 @@ type sessionStore struct {
 
 // globalStore is the process-wide ACP session registry.
 var globalStore = &sessionStore{sessions: make(map[string]*agentProc)}
-
-func init() {
-	go globalStore.cleanupLoop()
-}
 
 func (s *sessionStore) register(id string, a *agentProc) {
 	s.mu.Lock()
@@ -148,29 +129,4 @@ func (s *sessionStore) delete(id string) {
 	s.mu.Lock()
 	delete(s.sessions, id)
 	s.mu.Unlock()
-}
-
-func (s *sessionStore) cleanupLoop() {
-	t := time.NewTicker(cleanupInterval)
-	defer t.Stop()
-	for range t.C {
-		s.cleanup()
-	}
-}
-
-func (s *sessionStore) cleanup() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, a := range s.sessions {
-		a.mu.Lock()
-		idle := time.Since(a.lastActivity)
-		a.mu.Unlock()
-		if idle > sessionTTL {
-			log.Printf("[bridge] evicting idle session %s (idle %v)", id, idle)
-			if a.cmd.Process != nil {
-				_ = a.cmd.Process.Kill()
-			}
-			delete(s.sessions, id)
-		}
-	}
 }
